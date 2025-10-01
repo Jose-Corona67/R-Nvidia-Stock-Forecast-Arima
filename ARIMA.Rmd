@@ -1,0 +1,195 @@
+---
+title: "Arima"
+author: "Corona López José Luis"
+date: "2025-02-27"
+output: pdf_document
+---
+
+# Elección de variable
+
+```{r, message=FALSE}
+library(quantmod)
+library(dynlm)
+library(nlWaldTest)
+library(zoo)
+library(pdfetch)
+library(lmtest)
+library(broom)
+library(car)
+library(sandwich)
+library(knitr)
+library(forecast)
+library(readxl)
+library(systemfit)
+library(AER)
+library(Matrix)
+library(vars)
+library(plm)
+library(tseries)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+```
+
+```{r, message=FALSE}
+# Definir el ticker de NVIDIA y el rango de fechas
+ticker <- "NVDA"
+start_date <- "2015-01-01"
+end_date <- Sys.Date()
+
+# Descargar datos de Yahoo Finance
+getSymbols(ticker, src = "yahoo", from = start_date, to = end_date, auto.assign = TRUE)
+
+nvda_data <- data.frame(Date = index(NVDA), coredata(NVDA))
+
+nvda_monthly <- nvda_data %>%
+  mutate(Month = floor_date(Date, "month")) %>%
+  group_by(Month) %>%
+  summarize(Close = last(NVDA.Close)) 
+
+nvda.ts <- ts(nvda_monthly[,2], start = c(2015, 01), frequency = 12)
+```
+
+# Justificación
+
+Nvidia es una de las empresas más importantes tecnológicas, entonces precio de cierre representa el último precio al que se negoció una acción durante un día de negociación, por lo tanto junta todos los movimientos que existieron en el mercado durante el día.
+
+Estos datos nos permiten observar el comportamiento del precio, captar tendencias y detectar ciclos, para poder dar un pronóstico sobre el movimiento que tendrá, así se tomará mejores decisiones frente a posibles riesgos que se presenten.
+
+```{r, fig.width=8, fig.height=4}
+plot(nvda.ts)
+```
+
+Observamos que el precio ha subido en los dos últimos años, de 2022 hacía atras se mantuvo más o menos constantes, sin embargo ha crecido bastante, en los últimos meses ha tenido bajas significativas, esto responde a cierto tipo de eventos, podemos decir que esta caída fue de importante debido a que no se observa en nigún otro momento algo así.
+La serie observada no es estacionaria, es claro por los incrementos que se presentan.
+
+```{r}
+acf(nvda.ts)
+# Notamos que no existe estacionariedad, debido a que varios de los rezagos
+# pasan las bandas de confianza al 95%
+
+adf.test(nvda.ts)
+# Como p-value = 0.8788 > 0.05, no rechazamos Hipótesis nula
+# es decir, la serie no es estacionaria
+```
+
+Probando con la difrencia
+
+```{r}
+Dnvda <- diff(nvda.ts)
+plot(Dnvda)
+# En algunos puntos parece ser estacionaria, sin embargo,
+# como notamos en el primer gráfico, hay mucha más volatilidad en los últimos años
+
+acf(Dnvda)
+# Notamos que los rezagos no rebasan las bandas de confianza, a excepción de unos cuantos
+
+adf.test(Dnvda, k = 4)
+# En este caso p-value = 0.05467 > 0.05, por lo que no rechazamos Hipótesis nula
+# la serie con una diferencia aún no es estacionaria
+
+ndiffs(nvda.ts)
+# Se necesitan diferenciar la serie 2 veces para hacerla estacionaria
+```
+
+Era de esperarse un resultado de este tipo, por la naturaleza de la serie, tuvo un crecimiento casi exponencial en los últimos dos años, por lo que una diferencia no bastaría para poder hacerla estacionaria, aunque la diferencia es muy poca, o sea 0.00467, entonces en los modelos siguientes tomaremos 1 y 2 diferencias para evaluar el mejor.
+
+
+```{r}
+ggAcf(diff(Dnvda))
+ggPacf(diff(Dnvda))
+```
+
+# Modelos
+
+```{r}
+# Modelo con 1 diferencia
+fit1 <- auto.arima(nvda.ts, d = 1)
+fit1
+
+# Modelo con 2 diferencias
+fit2 <- auto.arima(nvda.ts, d = 2)
+fit2
+
+# Modelo sin estacionalidad
+fit3 <- auto.arima(nvda.ts, seasonal = F)
+fit3
+
+# Modelo sin estacionalidad y forzando a la función
+fit4 <- auto.arima(nvda.ts, , seasonal = F, stepwise = F, approximation = F)
+fit4
+
+# Modelo con estacionalidad y forzando a la función
+fit5 <- auto.arima(nvda.ts, , seasonal = T, stepwise = F, approximation = F)
+fit5
+
+# Modelo quitandole la estacionalidad manualmente
+des <- decompose(nvda.ts, type = "m")
+desnvda <- nvda.ts - des$seasonal
+fit6 <- Arima(nvda.ts, order = c(3,2,5))
+fit6
+```
+
+Revisando los criterios de información tenemos:
+
+```{r}
+
+comparaciones <- data.frame(
+  Model = c("fit1", "fit2", "fit3", "fit4", "fit5", "fit6"),
+  AIC = c(AIC(fit1), AIC(fit2), AIC(fit3), AIC(fit4), AIC(fit5), AIC(fit6)),
+  BIC = c(BIC(fit1), BIC(fit2), BIC(fit3), BIC(fit4), BIC(fit5), BIC(fit6)))
+
+comparaciones
+
+```
+
+Comparando los dos primeros modelos donde diferenciamos 1 y 2 veces respectivamente nos damos cuenta que es necesario y mejor hacerlo 2 veces, porque nuestros criterios de información son más bajos. Sin embargo, hay dos modelos muy similares que tienen AIC y BIC más bajos tadavía, se trata del 4 y del 5, realmente son lo mismo, en las líneas del código la distinción es que uno está tomando en cuenta la estacionalidad y en otro no, pero al verlo detenidamente no incluye este factor.
+Entonces para escoger nuestro mejor modelo podríamos tomar el 4 o 5, sin distinción.
+
+# Pronóstico
+
+```{r}
+Pro <- forecast(fit4, 4, 95)
+plot(Pro)
+```
+
+Vemos que las proyecciones que hace hacía 5 períodos hacía adelante varía y parece tener sentido con la naturaleza de los datos, podemos esperar los meses necesarios y comprobar si el probóstico realizado se asemeja a la realidad.
+
+Revisaremos los residuos ahora
+
+```{r}
+checkresiduals(fit4)
+```
+
+
+En este caso como p-value = 0.1603 > 0.05 consideramos los errores ruido blanco por lo que asumimos que no hay autocorrelación
+
+# Conclusión
+
+El mejor modelo es el 4to por sus criterios de información, como es una serie compleja no es tán factible incluirle una estacionalidad determinada, por eso es que no se incluye, además el pronóstico realizado es coherente con lo visto, hay que tomar en cuenta que el precio de las acciones de NVIDIA experimentó una caída sin precedentes el lunes 27 de enero de 2025, cayendo un 17% y borrando casi $600 mil millones en valor de mercado, esto fue provocada por el anuncio de la startup china DeepSeek sobre su modelo de inteligencia artificial.
+
+# Referencia
+
+https://www.ig.com/latam/ideas-de-trading-y-noticias/por_que_nvidia_cayodespuesdenoticiasdeepseek-250128#:~:text=%C2%BFQu%C3%A9%20caus%C3%B3%20la%20ca%C3%ADda%20de,millones%20en%20valor%20de%20mercado.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
